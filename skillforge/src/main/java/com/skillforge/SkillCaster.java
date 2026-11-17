@@ -5,6 +5,7 @@ import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
+import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
@@ -30,7 +31,7 @@ public final class SkillCaster {
     public static void cast(ServerPlayer player, int slot) {
         Skill skill = SkillAttachment.find(player, slot);
         if (skill == null) {
-            player.displayClientMessage(Component.literal("ช่อง " + slot + " ยังว่างอยู่"), true);
+            overlay(player, Component.literal("ช่อง " + slot + " ยังว่างอยู่"));
             return;
         }
 
@@ -39,7 +40,7 @@ public final class SkillCaster {
         long[] cd = COOLDOWNS.computeIfAbsent(player.getUUID(), k -> new long[Skill.SLOTS]);
         if (now < cd[slot - 1]) {
             double left = (cd[slot - 1] - now) / 20.0;
-            player.displayClientMessage(Component.literal(String.format("%s คูลดาวน์ %.1f วิ", skill.name(), left)), true);
+            overlay(player, Component.literal(String.format("%s คูลดาวน์ %.1f วิ", skill.name(), left)));
             return;
         }
         cd[slot - 1] = now + skill.cooldownTicks();
@@ -50,7 +51,7 @@ public final class SkillCaster {
             case AREA -> area(level, player, skill);
             case HEAL -> heal(level, player, skill);
         }
-        player.displayClientMessage(Component.literal(skill.name()), true);
+        overlay(player, Component.literal(skill.name()));
     }
 
     // ---------- ประเภทสกิล ----------
@@ -137,9 +138,28 @@ public final class SkillCaster {
             case SLOW -> target.addEffect(new MobEffectInstance(MobEffects.SLOWNESS, 100, 2));
             case POISON -> target.addEffect(new MobEffectInstance(MobEffects.POISON, 100, 1));
             case WITHER -> target.addEffect(new MobEffectInstance(MobEffects.WITHER, 100, 1));
-            case KNOCKBACK -> target.knockback(1.5, p.getX() - target.getX(), p.getZ() - target.getZ());
+            case KNOCKBACK -> pushAway(p, target, 1.5);
             case NONE -> {
             }
+        }
+    }
+
+    /** แสดงข้อความบน action bar (ใช้ packet ตรงๆ เพราะ displayClientMessage ถูกเอาออกใน 26.x) */
+    private static void overlay(ServerPlayer player, Component text) {
+        player.connection.send(new ClientboundSystemChatPacket(text, true));
+    }
+
+    /** ผลักเป้าหมายให้ห่างจากผู้ใช้สกิล (เขียนเองเพราะ LivingEntity.knockback เปลี่ยน signature) */
+    private static void pushAway(ServerPlayer p, LivingEntity target, double strength) {
+        Vec3 dir = new Vec3(target.getX() - p.getX(), 0, target.getZ() - p.getZ());
+        if (dir.lengthSqr() < 1.0E-4) {
+            dir = p.getLookAngle().multiply(1, 0, 1);
+        }
+        if (dir.lengthSqr() < 1.0E-4) return;
+        dir = dir.normalize().scale(strength);
+        target.setDeltaMovement(target.getDeltaMovement().add(dir.x, 0.4, dir.z));
+        if (target instanceof ServerPlayer sp) {
+            sp.connection.send(new ClientboundSetEntityMotionPacket(sp));
         }
     }
 
