@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "skillforge",
+  "version": "${version}",
+  "name": "Skill Forge",
+  "description": "สร้างสกิลพลังของตัวเองในเกม สไตล์ Skill Builder ของ JJS",
+  "authors": ["You"],
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["com.skillforge.SkillForge"],
+    "client": ["com.skillforge.client.SkillForgeClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": ">=26.3",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}
