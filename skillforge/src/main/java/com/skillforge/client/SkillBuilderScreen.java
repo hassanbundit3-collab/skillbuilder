@@ -47,7 +47,7 @@ public class SkillBuilderScreen extends Screen {
         int x2 = cx + 5;
         int w = 150;
 
-        addRenderableWidget(new StringWidget(cx - 100, 14, 200, 12, this.title, this.font).alignCenter());
+        addRenderableWidget(centered(cx, 14, this.title));
 
         slotBtn = addRenderableWidget(Button.builder(Component.empty(), b -> {
             slot = slot % Skill.SLOTS + 1;
@@ -103,10 +103,16 @@ public class SkillBuilderScreen extends Screen {
                     ? Component.translatable("screen.skillforge.slot_empty", KEYS[i])
                     : Component.translatable("screen.skillforge.slot_line", KEYS[i], s.name(),
                     Component.translatable("skillforge.type." + s.type().id()));
-            addRenderableWidget(new StringWidget(cx - 155, 184 + i * 13, 310, 12, line, this.font).alignCenter());
+            addRenderableWidget(centered(cx, 184 + i * 13, line));
         }
 
         refresh();
+    }
+
+    /** ข้อความกึ่งกลาง (StringWidget.alignCenter ถูกเอาออกใน 26.x จึงคำนวณตำแหน่งเอง) */
+    private StringWidget centered(int centerX, int y, Component text) {
+        int w = this.font.width(text);
+        return new StringWidget(centerX - w / 2, y, w, 12, text, this.font);
     }
 
     private void refresh() {
