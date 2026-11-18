@@ -13,15 +13,17 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * ตัวสร้างสกิลแบบไทม์ไลน์ (สไตล์ JJS): ซ้ายคือลิสต์บล็อกเรียงกัน ขวาคือค่าของบล็อกที่เลือก
- * แถวล่างคือปุ่มเพิ่มบล็อก ไม่ต้องเขียนโค้ด
+ * ค่าตัวเลขทั้งหมดพิมพ์เองได้ ปุ่ม "ดูกล่อง" แสดงกล่องฮิตบ็อกซ์ในโลกด้วยอนุภาค
  * ใช้เฉพาะ widget สำเร็จรูปของเกม (ไม่วาดเอง) เพื่อลดผลกระทบจากการเปลี่ยน API ด้าน rendering
  */
 public class SkillBuilderScreen extends Screen {
-    private static final float[] COOLDOWNS = {0.5f, 1, 2, 3, 5, 8, 12, 20, 30, 60};
     private static final String[] KEYS = {"Z", "X", "C", "V"};
     private static final int W = 420;
     private static final int PAGE = 6;
@@ -29,12 +31,17 @@ public class SkillBuilderScreen extends Screen {
 
     private int slot = 1;
     private String name = "";
-    private int cdIdx = 4;
+    private float cdSec = 5f;
     private final List<Skill.Block> blocks = new ArrayList<>();
     private int selected = -1;
     private int page = 0;
+    private int ppage = 0;
     private boolean loaded = false;
+
     private EditBox nameBox;
+    private EditBox cdBox;
+    private final Map<Integer, EditBox> paramBoxes = new LinkedHashMap<>();
+    private int boxBlock = -1;
 
     public SkillBuilderScreen() {
         super(Component.translatable("screen.skillforge.builder"));
@@ -47,6 +54,9 @@ public class SkillBuilderScreen extends Screen {
             loaded = true;
             loadSlot(slot);
         }
+        paramBoxes.clear();
+        boxBlock = -1;
+
         int cx = this.width / 2;
         int x0 = cx - W / 2;
         int x1 = x0 + 212;
@@ -67,61 +77,58 @@ public class SkillBuilderScreen extends Screen {
             });
         }
 
-        // ชื่อ + คูลดาวน์
+        // ชื่อ + คูลดาวน์ (พิมพ์เอง หน่วยวินาที)
         nameBox = addRenderableWidget(new EditBox(this.font, x0, top + 32, 240, 18,
                 Component.translatable("screen.skillforge.name_hint")));
         nameBox.setMaxLength(Skill.MAX_NAME);
         nameBox.setHint(Component.translatable("screen.skillforge.name_hint"));
         nameBox.setValue(name);
 
-        addRenderableWidget(new StringWidget(x0 + 248, top + 37, 82, 12,
-                Component.literal("คูลดาวน์ " + fmt(COOLDOWNS[cdIdx]) + "s"), this.font));
-        btn(Component.literal("-"), x0 + 332, top + 32, 40, () -> {
-            cdIdx = Math.max(0, cdIdx - 1);
-            rebuildWidgets();
-        });
-        btn(Component.literal("+"), x0 + 376, top + 32, 40, () -> {
-            cdIdx = Math.min(COOLDOWNS.length - 1, cdIdx + 1);
-            rebuildWidgets();
-        });
+        addRenderableWidget(new StringWidget(x0 + 246, top + 37, 70, 12,
+                Component.literal("คูลดาวน์ (วิ)"), this.font));
+        cdBox = addRenderableWidget(new EditBox(this.font, x0 + 330, top + 32, 86, 18,
+                Component.literal("cooldown")));
+        cdBox.setMaxLength(8);
+        cdBox.setValue(fmt(cdSec));
 
-        // หัวข้อ + ปุ่มเปลี่ยนหน้า
+        // หัวข้อซ้าย + ปุ่มเปลี่ยนหน้า
         int maxPage = Math.max(0, (blocks.size() - 1) / PAGE);
         page = Math.min(page, maxPage);
         addRenderableWidget(new StringWidget(x0, top + 55, 150, 12,
                 Component.literal("ไทม์ไลน์ (" + blocks.size() + "/" + Skill.MAX_BLOCKS + ")")
                         .withStyle(ChatFormatting.AQUA), this.font));
-        addRenderableWidget(Button.builder(Component.literal("^"), b -> {
+        btn(Component.literal("^"), x0 + 158, top + 52, 20, 14, () -> {
             page = Math.max(0, page - 1);
             rebuildWidgets();
-        }).bounds(x0 + 158, top + 52, 20, 14).build());
-        addRenderableWidget(Button.builder(Component.literal("v"), b -> {
+        });
+        btn(Component.literal("v"), x0 + 180, top + 52, 20, 14, () -> {
             page = Math.min(maxPage, page + 1);
             rebuildWidgets();
-        }).bounds(x0 + 180, top + 52, 20, 14).build());
+        });
 
         // ลิสต์บล็อก (ซ้าย)
         for (int i = 0; i < PAGE; i++) {
             final int bi = page * PAGE + i;
             if (bi >= blocks.size()) break;
             int y = top + 66 + i * 20;
-            BlockType t = BlockType.byId(blocks.get(bi).type());
-            MutableComponent label = Component.literal("#" + (bi + 1) + " " + (t == null ? "?" : t.label));
+            BlockType bt = BlockType.byId(blocks.get(bi).type());
+            MutableComponent label = Component.literal("#" + (bi + 1) + " " + (bt == null ? "?" : bt.label));
             if (bi == selected) label.withStyle(ChatFormatting.YELLOW);
             btn(label, x0, y, 136, () -> {
                 selected = bi;
+                ppage = 0;
                 rebuildWidgets();
             });
             btn(Component.literal("^"), x0 + 138, y, 20, () -> {
                 if (bi > 0) {
-                    java.util.Collections.swap(blocks, bi, bi - 1);
+                    Collections.swap(blocks, bi, bi - 1);
                     if (selected == bi) selected = bi - 1;
                     rebuildWidgets();
                 }
             });
             btn(Component.literal("v"), x0 + 160, y, 20, () -> {
                 if (bi < blocks.size() - 1) {
-                    java.util.Collections.swap(blocks, bi, bi + 1);
+                    Collections.swap(blocks, bi, bi + 1);
                     if (selected == bi) selected = bi + 1;
                     rebuildWidgets();
                 }
@@ -134,23 +141,52 @@ public class SkillBuilderScreen extends Screen {
         }
 
         // ค่าของบล็อกที่เลือก (ขวา)
-        addRenderableWidget(new StringWidget(x1, top + 55, 150, 12,
-                Component.literal("ค่าของบล็อก").withStyle(ChatFormatting.AQUA), this.font));
         if (selected >= 0 && selected < blocks.size()) {
             Skill.Block b = blocks.get(selected);
             BlockType t = BlockType.byId(b.type());
             if (t != null) {
-                for (int pi = 0; pi < t.params.length; pi++) {
-                    final int p = pi;
+                boxBlock = selected;
+                int n = t.params.length;
+                int maxPp = Math.max(0, (n - 1) / PAGE);
+                ppage = Math.min(ppage, maxPp);
+
+                addRenderableWidget(new StringWidget(x1, top + 55, 100, 12,
+                        Component.literal(t.label + " (" + (ppage + 1) + "/" + (maxPp + 1) + ")")
+                                .withStyle(ChatFormatting.AQUA), this.font));
+                if (t == BlockType.HITBOX) {
+                    btn(Component.literal("ดูกล่อง"), x1 + 100, top + 52, 68, 14, this::previewBox);
+                }
+                if (n > PAGE) {
+                    btn(Component.literal("^"), x1 + 172, top + 52, 18, 14, () -> {
+                        ppage = Math.max(0, ppage - 1);
+                        rebuildWidgets();
+                    });
+                    btn(Component.literal("v"), x1 + 190, top + 52, 18, 14, () -> {
+                        ppage = Math.min(maxPp, ppage + 1);
+                        rebuildWidgets();
+                    });
+                }
+
+                for (int i = 0; i < PAGE; i++) {
+                    final int pi = ppage * PAGE + i;
+                    if (pi >= n) break;
                     BlockType.Param param = t.params[pi];
-                    int y = top + 66 + pi * 20;
-                    addRenderableWidget(new StringWidget(x1, y + 5, 130, 12,
-                            Component.literal(param.label() + ": " + valueText(param, b.get(pi))), this.font));
-                    btn(Component.literal("-"), x1 + 132, y, 36, () -> adjust(t, p, -1));
-                    btn(Component.literal("+"), x1 + 172, y, 36, () -> adjust(t, p, +1));
+                    int y = top + 66 + i * 20;
+                    addRenderableWidget(new StringWidget(x1, y + 5, 118, 12, Component.literal(param.label()), this.font));
+                    if (param.kind() == BlockType.KIND_NUMBER) {
+                        EditBox box = addRenderableWidget(new EditBox(this.font, x1 + 120, y, 88, 18,
+                                Component.literal(param.label())));
+                        box.setMaxLength(8);
+                        box.setValue(fmt(b.get(pi)));
+                        paramBoxes.put(pi, box);
+                    } else {
+                        btn(Component.literal(valueText(param, b.get(pi))), x1 + 120, y, 88, () -> cycle(t, pi));
+                    }
                 }
             }
         } else {
+            addRenderableWidget(new StringWidget(x1, top + 55, 150, 12,
+                    Component.literal("ค่าของบล็อก").withStyle(ChatFormatting.AQUA), this.font));
             addRenderableWidget(new StringWidget(x1, top + 70, 208, 12,
                     Component.literal("เลือกบล็อกทางซ้ายเพื่อแก้ค่า").withStyle(ChatFormatting.GRAY), this.font));
         }
@@ -167,6 +203,7 @@ public class SkillBuilderScreen extends Screen {
                     blocks.add(t.defaultBlock());
                     selected = blocks.size() - 1;
                     page = selected / PAGE;
+                    ppage = 0;
                     rebuildWidgets();
                 }
             });
@@ -182,8 +219,68 @@ public class SkillBuilderScreen extends Screen {
         btn(Component.translatable("screen.skillforge.close"), x0 + 2 * (bw + 4), top + 222, bw, this::onClose);
     }
 
+    /** ทุกปุ่มจะอ่านค่าที่พิมพ์ในช่องก่อนทำงาน เพื่อไม่ให้ค่าที่พิมพ์หายตอนหน้าจอถูกสร้างใหม่ */
+    private Button btn(Component label, int x, int y, int w, int h, Runnable action) {
+        return addRenderableWidget(Button.builder(label, b -> {
+            commitFields();
+            action.run();
+        }).bounds(x, y, w, h).build());
+    }
+
     private Button btn(Component label, int x, int y, int w, Runnable action) {
-        return addRenderableWidget(Button.builder(label, b -> action.run()).bounds(x, y, w, 18).build());
+        return btn(label, x, y, w, 18, action);
+    }
+
+    private void commitFields() {
+        if (cdBox != null) {
+            Float v = parse(cdBox.getValue());
+            if (v != null && !v.isNaN() && !v.isInfinite()) cdSec = Math.max(0.5f, Math.min(120f, v));
+        }
+        if (boxBlock >= 0 && boxBlock < blocks.size() && !paramBoxes.isEmpty()) {
+            Skill.Block b = blocks.get(boxBlock);
+            BlockType t = BlockType.byId(b.type());
+            if (t == null) return;
+            List<Float> nv = new ArrayList<>(b.v());
+            for (Map.Entry<Integer, EditBox> en : paramBoxes.entrySet()) {
+                int pi = en.getKey();
+                Float v = parse(en.getValue().getValue());
+                if (v == null) continue;
+                while (nv.size() <= pi) nv.add(t.params[pi].def());
+                nv.set(pi, t.clamp(pi, v));
+            }
+            blocks.set(boxBlock, new Skill.Block(b.type(), nv));
+        }
+    }
+
+    private static Float parse(String s) {
+        try {
+            return Float.parseFloat(s.trim().replace(',', '.'));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private void cycle(BlockType t, int pi) {
+        if (selected < 0 || selected >= blocks.size()) return;
+        Skill.Block b = blocks.get(selected);
+        List<Float> nv = new ArrayList<>(b.v());
+        while (nv.size() <= pi) nv.add(t.params[pi].def());
+        float v = nv.get(pi) + 1;
+        if (v > t.params[pi].max()) v = 0;
+        nv.set(pi, v);
+        blocks.set(selected, new Skill.Block(b.type(), nv));
+        rebuildWidgets();
+    }
+
+    /** ส่งขนาด/ตำแหน่งของฮิตบ็อกซ์ที่เลือกไปให้เซิร์ฟเวอร์วาดกล่องอนุภาค (เริ่ม=ไฟส้ม, จบ=ไฟฟ้า) */
+    private void previewBox() {
+        if (selected < 0 || selected >= blocks.size()) return;
+        Skill.Block b = blocks.get(selected);
+        if (!BlockType.HITBOX.id.equals(b.type())) return;
+        int[] idx = {0, 1, 2, 5, 6, 7, 8, 9, 10};
+        StringBuilder sb = new StringBuilder("skill preview");
+        for (int i : idx) sb.append(' ').append(b.get(i));
+        send(sb.toString());
     }
 
     /** ข้อความกึ่งกลาง (คำนวณตำแหน่งเอง เพราะ StringWidget.alignCenter ถูกเอาออกใน 26.x) */
@@ -192,32 +289,20 @@ public class SkillBuilderScreen extends Screen {
         return new StringWidget(centerX - w / 2, y, w, 12, text, this.font);
     }
 
-    private void adjust(BlockType t, int pi, int dir) {
-        if (selected < 0 || selected >= blocks.size()) return;
-        Skill.Block b = blocks.get(selected);
-        BlockType.Param p = t.params[pi];
-        List<Float> nv = new ArrayList<>(b.v());
-        while (nv.size() <= pi) nv.add(p.def());
-        float v = nv.get(pi) + dir * p.step();
-        v = Math.round(v * 100f) / 100f;
-        nv.set(pi, t.clamp(pi, v));
-        blocks.set(selected, new Skill.Block(b.type(), nv));
-        rebuildWidgets();
-    }
-
     private void loadSlot(int s) {
         slot = s;
         selected = -1;
         page = 0;
+        ppage = 0;
         blocks.clear();
         Skill sk = skillAt(slot);
         if (sk != null) {
             name = sk.name();
             blocks.addAll(sk.blocks());
-            cdIdx = nearest(COOLDOWNS, sk.cooldownTicks() / 20f);
+            cdSec = sk.cooldownTicks() / 20f;
         } else {
             name = "";
-            cdIdx = 4;
+            cdSec = 5f;
         }
         nameBox = null; // ให้ init() ใช้ค่า name ที่เพิ่งโหลด ไม่ใช่ข้อความเก่าในกล่อง
     }
@@ -225,7 +310,7 @@ public class SkillBuilderScreen extends Screen {
     private void save() {
         String clean = nameBox.getValue().trim().replaceAll("[|;:\"\\\\]", "").replace(' ', '_');
         if (clean.isEmpty()) clean = "Skill" + slot;
-        int cd = Math.round(COOLDOWNS[cdIdx] * 20f);
+        int cd = Math.round(cdSec * 20f);
         String data = Skill.encode(clean, cd, blocks);
 
         int total = (data.length() + CHUNK - 1) / CHUNK;
@@ -241,23 +326,12 @@ public class SkillBuilderScreen extends Screen {
         if (p.kind() == BlockType.KIND_PARTICLE) {
             return BlockType.PARTICLE_NAMES[Math.max(0, Math.min(BlockType.PARTICLE_NAMES.length - 1, i))];
         }
-        if (p.kind() == BlockType.KIND_SOUND) {
-            return BlockType.SOUND_NAMES[Math.max(0, Math.min(BlockType.SOUND_NAMES.length - 1, i))];
-        }
-        return fmt(v);
+        return BlockType.SOUND_NAMES[Math.max(0, Math.min(BlockType.SOUND_NAMES.length - 1, i))];
     }
 
     private static Skill skillAt(int slot) {
         Minecraft mc = Minecraft.getInstance();
         return mc.player == null ? null : SkillAttachment.find(mc.player, slot);
-    }
-
-    private static int nearest(float[] arr, float v) {
-        int best = 0;
-        for (int i = 1; i < arr.length; i++) {
-            if (Math.abs(arr[i] - v) < Math.abs(arr[best] - v)) best = i;
-        }
-        return best;
     }
 
     private static String shorten(String s, int max) {
