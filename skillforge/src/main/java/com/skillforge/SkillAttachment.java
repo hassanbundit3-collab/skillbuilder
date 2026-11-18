@@ -16,11 +16,11 @@ import java.util.List;
  * - persistent: บันทึกลงไฟล์ผู้เล่น ไม่หายตอนออกเกม
  * - copyOnDeath: ตายแล้วสกิลยังอยู่
  * - syncWith: ส่งไปให้ client ของเจ้าของ เพื่อให้เมนูสร้างสกิลแสดงข้อมูลได้
- * (ใช้ id "skills_v2" เพราะรูปแบบข้อมูลสกิลเปลี่ยนจากเวอร์ชันแรก)
+ * (ใช้ id "skills_v3" เพราะรูปแบบข้อมูลสกิลเปลี่ยนจากเวอร์ชันแรก)
  */
 public final class SkillAttachment {
     public static final AttachmentType<List<Skill>> SKILLS = AttachmentRegistry.<List<Skill>>create(
-            Identifier.fromNamespaceAndPath(SkillForge.MOD_ID, "skills_v2"),
+            Identifier.fromNamespaceAndPath(SkillForge.MOD_ID, "skills_v3"),
             builder -> builder
                     .initializer(List::of)
                     .persistent(Skill.CODEC.listOf())
