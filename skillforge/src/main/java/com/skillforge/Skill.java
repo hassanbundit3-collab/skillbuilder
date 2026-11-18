@@ -16,7 +16,7 @@ public record Skill(int slot, String name, int cooldownTicks, List<Block> blocks
     public static final int MAX_NAME = 16;
     public static final int MAX_BLOCKS = 30;
     public static final int MIN_COOLDOWN_TICKS = 10;
-    public static final int MAX_COOLDOWN_TICKS = 1200;
+    public static final int MAX_COOLDOWN_TICKS = 2400;
 
     /** บล็อกหนึ่งอัน: ชนิด + ค่าตัวเลขตามลำดับช่องใน BlockType.params */
     public record Block(String type, List<Float> v) {
