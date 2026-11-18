@@ -1,7 +1,10 @@
 package com.skillforge;
 
+import com.mojang.brigadier.arguments.FloatArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.ArgumentBuilder;
+import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
@@ -16,6 +19,7 @@ import java.util.Map;
 
 /**
  * /skill upload <slot> <idx> <total> <data>   (เมนูสร้างสกิลใช้ส่งสกิลเป็นชิ้นๆ ไม่ต้องพิมพ์เอง)
+ * /skill preview <w> <h> <l> <f1> <r1> <u1> <f2> <r2> <u2>   (ปุ่ม "ดูกล่อง" ในเมนูใช้)
  * /skill cast <slot>
  * /skill delete <slot>
  * /skill list
@@ -38,6 +42,7 @@ public final class SkillCommands {
                                 .then(Commands.argument("total", IntegerArgumentType.integer(1, 100))
                                 .then(Commands.argument("data", StringArgumentType.greedyString())
                                         .executes(SkillCommands::upload))))))
+                        .then(Commands.literal("preview").then(previewArgs()))
                         .then(Commands.literal("cast")
                                 .then(Commands.argument("slot", IntegerArgumentType.integer(1, Skill.SLOTS))
                                         .executes(ctx -> {
@@ -71,6 +76,35 @@ public final class SkillCommands {
                                     return skills.size();
                                 }))
                 ));
+    }
+
+    private static ArgumentBuilder<CommandSourceStack, ?> previewArgs() {
+        String[] names = {"w", "h", "l", "f1", "r1", "u1", "f2", "r2", "u2"};
+        ArgumentBuilder<CommandSourceStack, ?> node = null;
+        for (int i = names.length - 1; i >= 0; i--) {
+            float min = i < 3 ? 0.1f : -60f;
+            float max = i < 3 ? 20f : 60f;
+            RequiredArgumentBuilder<CommandSourceStack, Float> arg =
+                    Commands.argument(names[i], FloatArgumentType.floatArg(min, max));
+            if (node == null) {
+                arg.executes(SkillCommands::preview);
+            } else {
+                arg.then(node);
+            }
+            node = arg;
+        }
+        return node;
+    }
+
+    private static int preview(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer player = ctx.getSource().getPlayerOrException();
+        String[] names = {"w", "h", "l", "f1", "r1", "u1", "f2", "r2", "u2"};
+        float[] v = new float[names.length];
+        for (int i = 0; i < names.length; i++) {
+            v[i] = FloatArgumentType.getFloat(ctx, names[i]);
+        }
+        SkillCaster.preview(player, v);
+        return 1;
     }
 
     private static int upload(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
