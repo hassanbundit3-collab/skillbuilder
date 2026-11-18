@@ -4,15 +4,20 @@ import com.skillforge.Skill;
 import com.skillforge.SkillAttachment;
 import com.skillforge.SkillEffect;
 import com.skillforge.SkillType;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.StringWidget;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 
 /**
- * เมนูสร้างสกิล: เลือกช่อง ตั้งชื่อ เลือกประเภท/เอฟเฟกต์ และค่าตัวเลข แล้วกดบันทึก
+ * เมนูสร้างสกิล (ดีไซน์ใหม่)
+ * - แถบเลือกช่อง 4 ปุ่ม แสดงปุ่มลัดและชื่อสกิลที่มีอยู่ กดแล้วโหลดสกิลนั้นมาแก้ได้
+ * - เลือกประเภท/เอฟเฟกต์ด้วยปุ่มเรียงกัน ตัวที่เลือกอยู่เป็นสีเหลือง
+ * - ปรับค่าด้วยปุ่ม - และ +
  * ใช้เฉพาะ widget สำเร็จรูปของเกม (ไม่วาดเอง) เพื่อลดผลกระทบจากการเปลี่ยน API ด้าน rendering
  */
 public class SkillBuilderScreen extends Screen {
@@ -20,6 +25,7 @@ public class SkillBuilderScreen extends Screen {
     private static final float[] RANGES = {4, 8, 12, 20, 30, 40};
     private static final float[] COOLDOWNS = {0.5f, 1, 2, 3, 5, 8, 12, 20, 30};
     private static final String[] KEYS = {"Z", "X", "C", "V"};
+    private static final int W = 316;
 
     private int slot = 1;
     private int dmgIdx = 2;
@@ -27,14 +33,16 @@ public class SkillBuilderScreen extends Screen {
     private int cdIdx = 3;
     private SkillType type = SkillType.PROJECTILE;
     private SkillEffect effect = SkillEffect.NONE;
+    private boolean loaded = false;
 
     private EditBox nameBox;
-    private Button slotBtn;
-    private Button typeBtn;
-    private Button effectBtn;
-    private Button dmgBtn;
-    private Button rangeBtn;
-    private Button cdBtn;
+    private final Button[] slotBtns = new Button[Skill.SLOTS];
+    private final Button[] typeBtns = new Button[SkillType.values().length];
+    private final Button[] effectBtns = new Button[SkillEffect.values().length];
+    private StringWidget dmgLabel;
+    private StringWidget rangeLabel;
+    private StringWidget cdLabel;
+    private StringWidget summary;
 
     public SkillBuilderScreen() {
         super(Component.translatable("screen.skillforge.builder"));
@@ -43,87 +51,155 @@ public class SkillBuilderScreen extends Screen {
     @Override
     protected void init() {
         int cx = this.width / 2;
-        int x1 = cx - 155;
-        int x2 = cx + 5;
-        int w = 150;
+        int x0 = cx - W / 2;
+        int top = Math.max(4, (this.height - 238) / 2);
+        String keep = nameBox != null ? nameBox.getValue() : null;
 
-        addRenderableWidget(centered(cx, 14, this.title));
+        addRenderableWidget(centered(cx, top, this.title.copy().withStyle(ChatFormatting.GOLD)));
 
-        slotBtn = addRenderableWidget(Button.builder(Component.empty(), b -> {
-            slot = slot % Skill.SLOTS + 1;
-            refresh();
-        }).bounds(x1, 40, w, 20).build());
+        // แถบช่อง 1-4
+        int slotW = (W - 12) / 4;
+        for (int i = 0; i < Skill.SLOTS; i++) {
+            final int idx = i + 1;
+            slotBtns[i] = addRenderableWidget(Button.builder(Component.empty(), b -> {
+                loadSlot(idx);
+                refresh();
+            }).bounds(x0 + i * (slotW + 4), top + 14, slotW, 20).build());
+        }
 
-        nameBox = addRenderableWidget(new EditBox(this.font, x2, 40, w, 20,
+        // ชื่อสกิล
+        nameBox = addRenderableWidget(new EditBox(this.font, x0, top + 38, W, 20,
                 Component.translatable("screen.skillforge.name_hint")));
         nameBox.setMaxLength(Skill.MAX_NAME);
         nameBox.setHint(Component.translatable("screen.skillforge.name_hint"));
 
-        typeBtn = addRenderableWidget(Button.builder(Component.empty(), b -> {
-            type = type.next();
-            refresh();
-        }).bounds(x1, 66, w, 20).build());
+        // ประเภทสกิล
+        SkillType[] types = SkillType.values();
+        int typeW = (W - 4 * (types.length - 1)) / types.length;
+        for (int i = 0; i < types.length; i++) {
+            final SkillType t = types[i];
+            typeBtns[i] = addRenderableWidget(Button.builder(Component.empty(), b -> {
+                type = t;
+                refresh();
+            }).bounds(x0 + i * (typeW + 4), top + 62, typeW, 20).build());
+        }
 
-        effectBtn = addRenderableWidget(Button.builder(Component.empty(), b -> {
-            effect = effect.next();
-            refresh();
-        }).bounds(x2, 66, w, 20).build());
+        // เอฟเฟกต์ (3 ปุ่มต่อแถว)
+        SkillEffect[] effects = SkillEffect.values();
+        int effW = (W - 8) / 3;
+        for (int i = 0; i < effects.length; i++) {
+            final SkillEffect e = effects[i];
+            int col = i % 3;
+            int row = i / 3;
+            effectBtns[i] = addRenderableWidget(Button.builder(Component.empty(), b -> {
+                effect = e;
+                refresh();
+            }).bounds(x0 + col * (effW + 4), top + 86 + row * 22, effW, 20).build());
+        }
 
-        dmgBtn = addRenderableWidget(Button.builder(Component.empty(), b -> {
-            dmgIdx = (dmgIdx + 1) % DAMAGES.length;
-            refresh();
-        }).bounds(x1, 92, w, 20).build());
+        // ค่าตัวเลข
+        dmgLabel = addStat(x0, top + 134,
+                () -> dmgIdx = Math.max(0, dmgIdx - 1),
+                () -> dmgIdx = Math.min(DAMAGES.length - 1, dmgIdx + 1));
+        rangeLabel = addStat(x0, top + 156,
+                () -> rangeIdx = Math.max(0, rangeIdx - 1),
+                () -> rangeIdx = Math.min(RANGES.length - 1, rangeIdx + 1));
+        cdLabel = addStat(x0, top + 178,
+                () -> cdIdx = Math.max(0, cdIdx - 1),
+                () -> cdIdx = Math.min(COOLDOWNS.length - 1, cdIdx + 1));
 
-        rangeBtn = addRenderableWidget(Button.builder(Component.empty(), b -> {
-            rangeIdx = (rangeIdx + 1) % RANGES.length;
-            refresh();
-        }).bounds(x2, 92, w, 20).build());
+        summary = addRenderableWidget(new StringWidget(x0, top + 204, W, 12, Component.empty(), this.font));
 
-        cdBtn = addRenderableWidget(Button.builder(Component.empty(), b -> {
-            cdIdx = (cdIdx + 1) % COOLDOWNS.length;
-            refresh();
-        }).bounds(x1, 118, w, 20).build());
-
+        // ปุ่มล่าง
+        int bw = (W - 8) / 3;
+        addRenderableWidget(Button.builder(Component.translatable("screen.skillforge.save"), b -> save())
+                .bounds(x0, top + 218, bw, 20).build());
         addRenderableWidget(Button.builder(Component.translatable("screen.skillforge.delete"), b -> {
             send("skill delete " + slot);
             onClose();
-        }).bounds(x2, 118, w, 20).build());
-
-        addRenderableWidget(Button.builder(Component.translatable("screen.skillforge.save"), b -> save())
-                .bounds(x1, 150, w, 20).build());
-
+        }).bounds(x0 + bw + 4, top + 218, bw, 20).build());
         addRenderableWidget(Button.builder(Component.translatable("screen.skillforge.close"), b -> onClose())
-                .bounds(x2, 150, w, 20).build());
+                .bounds(x0 + 2 * (bw + 4), top + 218, bw, 20).build());
 
-        // แสดงสกิลที่มีอยู่ในแต่ละช่อง
-        for (int i = 0; i < Skill.SLOTS; i++) {
-            Skill s = Minecraft.getInstance().player == null ? null
-                    : SkillAttachment.find(Minecraft.getInstance().player, i + 1);
-            Component line = s == null
-                    ? Component.translatable("screen.skillforge.slot_empty", KEYS[i])
-                    : Component.translatable("screen.skillforge.slot_line", KEYS[i], s.name(),
-                    Component.translatable("skillforge.type." + s.type().id()));
-            addRenderableWidget(centered(cx, 184 + i * 13, line));
+        if (!loaded) {
+            loaded = true;
+            loadSlot(slot);
+        } else if (keep != null) {
+            nameBox.setValue(keep);
         }
-
         refresh();
     }
 
-    /** ข้อความกึ่งกลาง (StringWidget.alignCenter ถูกเอาออกใน 26.x จึงคำนวณตำแหน่งเอง) */
+    /** แถวปรับค่า: ข้อความด้านซ้าย ปุ่ม - และ + ด้านขวา */
+    private StringWidget addStat(int x0, int y, Runnable dec, Runnable inc) {
+        StringWidget label = addRenderableWidget(new StringWidget(x0, y + 6, 220, 12, Component.empty(), this.font));
+        addRenderableWidget(Button.builder(Component.literal("-"), b -> {
+            dec.run();
+            refresh();
+        }).bounds(x0 + 228, y, 40, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("+"), b -> {
+            inc.run();
+            refresh();
+        }).bounds(x0 + 272, y, 40, 20).build());
+        return label;
+    }
+
+    /** ข้อความกึ่งกลาง (คำนวณตำแหน่งเอง เพราะ StringWidget.alignCenter ถูกเอาออกใน 26.x) */
     private StringWidget centered(int centerX, int y, Component text) {
         int w = this.font.width(text);
         return new StringWidget(centerX - w / 2, y, w, 12, text, this.font);
     }
 
+    private void loadSlot(int s) {
+        slot = s;
+        Skill sk = skillAt(slot);
+        String name = "";
+        if (sk != null) {
+            type = sk.type();
+            effect = sk.effect();
+            dmgIdx = nearest(DAMAGES, sk.damage());
+            rangeIdx = nearest(RANGES, sk.range());
+            cdIdx = nearest(COOLDOWNS, sk.cooldownTicks() / 20f);
+            name = sk.name();
+        } else {
+            type = SkillType.PROJECTILE;
+            effect = SkillEffect.NONE;
+            dmgIdx = 2;
+            rangeIdx = 2;
+            cdIdx = 3;
+        }
+        if (nameBox != null) nameBox.setValue(name);
+    }
+
     private void refresh() {
-        slotBtn.setMessage(Component.translatable("screen.skillforge.slot", slot));
-        typeBtn.setMessage(Component.translatable("screen.skillforge.type",
-                Component.translatable("skillforge.type." + type.id())));
-        effectBtn.setMessage(Component.translatable("screen.skillforge.effect",
-                Component.translatable("skillforge.effect." + effect.id())));
-        dmgBtn.setMessage(Component.translatable("screen.skillforge.damage", fmt(DAMAGES[dmgIdx])));
-        rangeBtn.setMessage(Component.translatable("screen.skillforge.range", fmt(RANGES[rangeIdx])));
-        cdBtn.setMessage(Component.translatable("screen.skillforge.cooldown", fmt(COOLDOWNS[cdIdx])));
+        for (int i = 0; i < Skill.SLOTS; i++) {
+            Skill s = skillAt(i + 1);
+            String text = "[" + KEYS[i] + "] " + (s == null ? "-" : shorten(s.name(), 6));
+            MutableComponent c = Component.literal(text);
+            if (i + 1 == slot) c.withStyle(ChatFormatting.YELLOW);
+            slotBtns[i].setMessage(c);
+        }
+        SkillType[] types = SkillType.values();
+        for (int i = 0; i < types.length; i++) {
+            MutableComponent c = Component.translatable("skillforge.type." + types[i].id());
+            if (types[i] == type) c.withStyle(ChatFormatting.YELLOW).withStyle(ChatFormatting.BOLD);
+            typeBtns[i].setMessage(c);
+        }
+        SkillEffect[] effects = SkillEffect.values();
+        for (int i = 0; i < effects.length; i++) {
+            MutableComponent c = Component.translatable("skillforge.effect." + effects[i].id());
+            if (effects[i] == effect) c.withStyle(ChatFormatting.YELLOW).withStyle(ChatFormatting.BOLD);
+            effectBtns[i].setMessage(c);
+        }
+        dmgLabel.setMessage(Component.translatable("screen.skillforge.damage", fmt(DAMAGES[dmgIdx])));
+        rangeLabel.setMessage(Component.translatable("screen.skillforge.range", fmt(RANGES[rangeIdx])));
+        cdLabel.setMessage(Component.translatable("screen.skillforge.cooldown", fmt(COOLDOWNS[cdIdx])));
+
+        MutableComponent sum = Component.empty()
+                .append(Component.translatable("skillforge.type." + type.id()))
+                .append(Component.literal("  +  "))
+                .append(Component.translatable("skillforge.effect." + effect.id()));
+        summary.setMessage(sum.withStyle(ChatFormatting.AQUA));
     }
 
     private void save() {
@@ -132,6 +208,23 @@ public class SkillBuilderScreen extends Screen {
         send("skill create " + slot + " \"" + name + "\" " + type.id() + " "
                 + DAMAGES[dmgIdx] + " " + RANGES[rangeIdx] + " " + COOLDOWNS[cdIdx] + " " + effect.id());
         onClose();
+    }
+
+    private static Skill skillAt(int slot) {
+        Minecraft mc = Minecraft.getInstance();
+        return mc.player == null ? null : SkillAttachment.find(mc.player, slot);
+    }
+
+    private static int nearest(float[] arr, float v) {
+        int best = 0;
+        for (int i = 1; i < arr.length; i++) {
+            if (Math.abs(arr[i] - v) < Math.abs(arr[best] - v)) best = i;
+        }
+        return best;
+    }
+
+    private static String shorten(String s, int max) {
+        return s.length() <= max ? s : s.substring(0, max) + "..";
     }
 
     private static void send(String command) {
