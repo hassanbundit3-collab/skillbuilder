@@ -8,25 +8,82 @@ import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.effect.MobEffectInstance;
-import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/** ตรรกะการใช้สกิล ทำงานฝั่งเซิร์ฟเวอร์เท่านั้น */
+/**
+ * ตัวรันสกิล ทำงานฝั่งเซิร์ฟเวอร์เท่านั้น
+ * สกิลคือลิสต์ของบล็อก รันเรียงจากบนลงล่าง บล็อก "รอ" จะหยุดรอตามจำนวน tick แล้วรันต่อ
+ */
 public final class SkillCaster {
+    // ลำดับต้องตรงกับ BlockType.PARTICLE_NAMES
+    private static final ParticleOptions[] PARTICLES = {
+            ParticleTypes.FLAME, ParticleTypes.SOUL_FIRE_FLAME, ParticleTypes.ELECTRIC_SPARK,
+            ParticleTypes.END_ROD, ParticleTypes.CRIT, ParticleTypes.SNOWFLAKE,
+            ParticleTypes.WITCH, ParticleTypes.SMOKE, ParticleTypes.CLOUD, ParticleTypes.HEART
+    };
+
+    // ลำดับต้องตรงกับ BlockType.SOUND_NAMES
+    private static final SoundEvent[] SOUNDS = {
+            SoundEvents.BLAZE_SHOOT, SoundEvents.GENERIC_EXPLODE.value(), SoundEvents.ENDERMAN_TELEPORT
+    };
+
     private static final Map<UUID, long[]> COOLDOWNS = new HashMap<>();
+    private static final List<Running> RUNNING = new ArrayList<>();
+    private static final List<Proj> PROJECTILES = new ArrayList<>();
 
     private SkillCaster() {
     }
+
+    private static final class Running {
+        final ServerPlayer player;
+        final Skill skill;
+        int index = 0;
+        int wait = 0;
+
+        Running(ServerPlayer player, Skill skill) {
+            this.player = player;
+            this.skill = skill;
+        }
+    }
+
+    private static final class Proj {
+        final ServerLevel level;
+        final ServerPlayer owner;
+        Vec3 pos;
+        final Vec3 dir;
+        final double speed;
+        double left;
+        final float damage;
+        final float knockback;
+        final ParticleOptions fx;
+
+        Proj(ServerLevel level, ServerPlayer owner, Vec3 pos, Vec3 dir, double speed, double range,
+             float damage, float knockback, ParticleOptions fx) {
+            this.level = level;
+            this.owner = owner;
+            this.pos = pos;
+            this.dir = dir;
+            this.speed = speed;
+            this.left = range;
+            this.damage = damage;
+            this.knockback = knockback;
+            this.fx = fx;
+        }
+    }
+
+    // ---------- เริ่มใช้สกิล ----------
 
     public static void cast(ServerPlayer player, int slot) {
         Skill skill = SkillAttachment.find(player, slot);
@@ -45,103 +102,169 @@ public final class SkillCaster {
         }
         cd[slot - 1] = now + skill.cooldownTicks();
 
-        switch (skill.type()) {
-            case PROJECTILE -> projectile(level, player, skill);
-            case DASH -> dash(level, player, skill);
-            case AREA -> area(level, player, skill);
-            case HEAL -> heal(level, player, skill);
-        }
+        Running r = new Running(player, skill);
+        RUNNING.add(r);
+        if (advance(r)) RUNNING.remove(r);
         overlay(player, Component.literal(skill.name()));
     }
 
-    // ---------- ประเภทสกิล ----------
+    // ---------- เรียกทุก tick ของเซิร์ฟเวอร์ ----------
 
-    private static void projectile(ServerLevel level, ServerPlayer p, Skill s) {
-        Vec3 eye = p.getEyePosition();
-        Vec3 dir = p.getLookAngle();
-        ParticleOptions trail = particle(s.effect());
-        Vec3 impact = eye.add(dir.scale(s.range()));
-        LivingEntity hit = null;
-
-        for (double d = 1.0; d <= s.range(); d += 0.5) {
-            Vec3 pos = eye.add(dir.scale(d));
-            BlockPos bp = BlockPos.containing(pos);
-            if (!level.getBlockState(bp).getCollisionShape(level, bp).isEmpty()) {
-                impact = pos;
-                break;
+    public static void tick() {
+        for (Iterator<Running> it = RUNNING.iterator(); it.hasNext(); ) {
+            Running r = it.next();
+            if (r.player.isRemoved() || !r.player.isAlive()) {
+                it.remove();
+                continue;
             }
-            level.sendParticles(trail, pos.x, pos.y, pos.z, 1, 0, 0, 0, 0);
-            AABB box = new AABB(pos, pos).inflate(0.6);
-            List<LivingEntity> found = level.getEntitiesOfClass(LivingEntity.class, box,
-                    e -> e != p && e.isAlive() && !e.isSpectator());
-            if (!found.isEmpty()) {
-                hit = found.get(0);
-                impact = pos;
-                break;
-            }
+            if (r.wait > 0) r.wait--;
+            if (advance(r)) it.remove();
         }
-
-        if (hit != null) applyHit(level, p, hit, s);
-        burst(level, trail, impact, 15, 0.3);
-        level.playSound(null, p.getX(), p.getY(), p.getZ(), SoundEvents.BLAZE_SHOOT, SoundSource.PLAYERS, 1f, 1f);
+        for (Iterator<Proj> it = PROJECTILES.iterator(); it.hasNext(); ) {
+            if (stepProjectile(it.next())) it.remove();
+        }
     }
 
-    private static void dash(ServerLevel level, ServerPlayer p, Skill s) {
-        Vec3 look = p.getLookAngle();
-        double power = Math.min(4.0, Math.max(0.8, s.range() / 8.0));
+    /** รันบล็อกต่อจากจุดเดิมจนเจอบล็อกรอหรือหมดลิสต์ คืน true ถ้ารันจบแล้ว */
+    private static boolean advance(Running r) {
+        List<Skill.Block> blocks = r.skill.blocks();
+        while (r.wait <= 0 && r.index < blocks.size()) {
+            Skill.Block b = blocks.get(r.index++);
+            BlockType t = BlockType.byId(b.type());
+            if (t == null) continue;
+            if (t == BlockType.WAIT) {
+                r.wait = Math.round(b.get(0));
+                continue;
+            }
+            exec(r.player, t, b);
+        }
+        return r.index >= blocks.size() && r.wait <= 0;
+    }
 
-        if (s.damage() > 0) {
-            AABB sweep = p.getBoundingBox().expandTowards(look.scale(s.range() / 2.0)).inflate(1.0);
-            for (LivingEntity t : level.getEntitiesOfClass(LivingEntity.class, sweep, e -> e != p && e.isAlive())) {
-                applyHit(level, p, t, s);
+    // ---------- บล็อกแต่ละชนิด ----------
+
+    private static void exec(ServerPlayer p, BlockType t, Skill.Block b) {
+        ServerLevel level = (ServerLevel) p.level();
+        switch (t) {
+            case PARTICLE -> particle(level, p, b);
+            case HITBOX -> hitbox(level, p, b);
+            case PROJECTILE -> projectile(level, p, b);
+            case VELOCITY -> velocity(p, b);
+            case TELEPORT -> teleport(level, p, b);
+            case SOUND -> sound(level, p, b);
+            default -> {
             }
         }
+    }
 
-        p.setDeltaMovement(look.scale(power));
+    private static void particle(ServerLevel level, ServerPlayer p, Skill.Block b) {
+        ParticleOptions fx = PARTICLES[clampIndex((int) b.get(0), PARTICLES.length)];
+        int count = (int) b.get(1);
+        double spread = b.get(2);
+        Vec3 pos = p.getEyePosition().add(p.getLookAngle().scale(b.get(3)));
+        level.sendParticles(fx, pos.x, pos.y, pos.z, count, spread, spread, spread, 0.02);
+    }
+
+    private static void hitbox(ServerLevel level, ServerPlayer p, Skill.Block b) {
+        double size = b.get(0);
+        Vec3 center = p.getEyePosition().add(p.getLookAngle().scale(b.get(1)));
+        float damage = b.get(2);
+        float knockback = b.get(3);
+
+        AABB box = new AABB(center, center).inflate(size);
+        List<LivingEntity> found = level.getEntitiesOfClass(LivingEntity.class, box,
+                e -> e != p && e.isAlive() && !e.isSpectator());
+        for (LivingEntity target : found) {
+            hit(level, p, target, damage, knockback);
+        }
+        level.sendParticles(ParticleTypes.CRIT, center.x, center.y, center.z, 8, size / 2, size / 2, size / 2, 0.05);
+    }
+
+    private static void projectile(ServerLevel level, ServerPlayer p, Skill.Block b) {
+        ParticleOptions fx = PARTICLES[clampIndex((int) b.get(4), PARTICLES.length)];
+        PROJECTILES.add(new Proj(level, p, p.getEyePosition(), p.getLookAngle(),
+                b.get(0), b.get(1), b.get(2), b.get(3), fx));
+        level.playSound(null, p.getX(), p.getY(), p.getZ(), SoundEvents.BLAZE_SHOOT, SoundSource.PLAYERS, 0.8f, 1.2f);
+    }
+
+    private static void velocity(ServerPlayer p, Skill.Block b) {
+        Vec3 look = p.getLookAngle();
+        double s = b.get(0);
+        p.setDeltaMovement(look.x * s, look.y * s + b.get(1), look.z * s);
         p.resetFallDistance();
         p.connection.send(new ClientboundSetEntityMotionPacket(p));
-        burst(level, particle(s.effect()), p.position().add(0, 1, 0), 25, 0.4);
-        level.playSound(null, p.getX(), p.getY(), p.getZ(), SoundEvents.BLAZE_SHOOT, SoundSource.PLAYERS, 1f, 1.4f);
     }
 
-    private static void area(ServerLevel level, ServerPlayer p, Skill s) {
-        double r = s.range();
-        AABB box = p.getBoundingBox().inflate(r);
-        for (LivingEntity t : level.getEntitiesOfClass(LivingEntity.class, box,
-                e -> e != p && e.isAlive() && e.distanceTo(p) <= r)) {
-            applyHit(level, p, t, s);
+    private static void teleport(ServerLevel level, ServerPlayer p, Skill.Block b) {
+        Vec3 start = p.position();
+        Vec3 look = p.getLookAngle();
+        double best = 0;
+        for (double d = 0.5; d <= b.get(0); d += 0.5) {
+            Vec3 feet = start.add(look.scale(d));
+            if (solid(level, feet) || solid(level, feet.add(0, 1, 0))) break;
+            best = d;
         }
-
-        ParticleOptions particle = particle(s.effect());
-        for (int i = 0; i < 48; i++) {
-            double a = (Math.PI * 2 / 48) * i;
-            level.sendParticles(particle, p.getX() + Math.cos(a) * r, p.getY() + 0.2, p.getZ() + Math.sin(a) * r,
-                    1, 0, 0.1, 0, 0);
-        }
-        burst(level, particle, p.position().add(0, 1, 0), 30, 0.8);
-        level.playSound(null, p.getX(), p.getY(), p.getZ(), SoundEvents.GENERIC_EXPLODE.value(), SoundSource.PLAYERS, 0.6f, 1.2f);
+        if (best <= 0) return;
+        Vec3 dest = start.add(look.scale(best));
+        level.sendParticles(ParticleTypes.PORTAL, start.x, start.y + 1, start.z, 25, 0.3, 0.6, 0.3, 0.2);
+        p.teleportTo(dest.x, dest.y, dest.z);
+        level.sendParticles(ParticleTypes.PORTAL, dest.x, dest.y + 1, dest.z, 25, 0.3, 0.6, 0.3, 0.2);
     }
 
-    private static void heal(ServerLevel level, ServerPlayer p, Skill s) {
-        p.heal(s.damage());
-        burst(level, ParticleTypes.HEART, p.position().add(0, 1.2, 0), 8, 0.5);
+    private static void sound(ServerLevel level, ServerPlayer p, Skill.Block b) {
+        SoundEvent s = SOUNDS[clampIndex((int) b.get(0), SOUNDS.length)];
+        level.playSound(null, p.getX(), p.getY(), p.getZ(), s, SoundSource.PLAYERS, b.get(1), b.get(2));
+    }
+
+    // ---------- กระสุน ----------
+
+    /** เดินกระสุนหนึ่ง tick คืน true ถ้ากระสุนหมดอายุ (ชนหรือสุดระยะ) */
+    private static boolean stepProjectile(Proj pr) {
+        int steps = Math.max(1, (int) Math.ceil(pr.speed / 0.5));
+        double len = pr.speed / steps;
+        for (int i = 0; i < steps; i++) {
+            pr.pos = pr.pos.add(pr.dir.scale(len));
+            pr.left -= len;
+
+            if (solid(pr.level, pr.pos)) {
+                burst(pr.level, pr.fx, pr.pos);
+                return true;
+            }
+            pr.level.sendParticles(pr.fx, pr.pos.x, pr.pos.y, pr.pos.z, 2, 0.05, 0.05, 0.05, 0.0);
+
+            AABB box = new AABB(pr.pos, pr.pos).inflate(0.6);
+            List<LivingEntity> found = pr.level.getEntitiesOfClass(LivingEntity.class, box,
+                    e -> e != pr.owner && e.isAlive() && !e.isSpectator());
+            if (!found.isEmpty()) {
+                hit(pr.level, pr.owner, found.get(0), pr.damage, pr.knockback);
+                burst(pr.level, pr.fx, pr.pos);
+                return true;
+            }
+            if (pr.left <= 0) return true;
+        }
+        return false;
     }
 
     // ---------- ตัวช่วย ----------
 
-    private static void applyHit(ServerLevel level, ServerPlayer p, LivingEntity target, Skill s) {
-        if (s.damage() > 0) {
-            target.hurtServer(level, level.damageSources().playerAttack(p), s.damage());
+    private static void hit(ServerLevel level, ServerPlayer p, LivingEntity target, float damage, float knockback) {
+        if (damage > 0) {
+            target.hurtServer(level, level.damageSources().playerAttack(p), damage);
         }
-        switch (s.effect()) {
-            case FIRE -> target.igniteForSeconds(5);
-            case SLOW -> target.addEffect(new MobEffectInstance(MobEffects.SLOWNESS, 100, 2));
-            case POISON -> target.addEffect(new MobEffectInstance(MobEffects.POISON, 100, 1));
-            case WITHER -> target.addEffect(new MobEffectInstance(MobEffects.WITHER, 100, 1));
-            case KNOCKBACK -> pushAway(p, target, 1.5);
-            case NONE -> {
-            }
-        }
+        if (knockback > 0) pushAway(p, target, knockback);
+    }
+
+    private static void burst(ServerLevel level, ParticleOptions fx, Vec3 pos) {
+        level.sendParticles(fx, pos.x, pos.y, pos.z, 15, 0.3, 0.3, 0.3, 0.03);
+    }
+
+    private static boolean solid(ServerLevel level, Vec3 pos) {
+        BlockPos bp = BlockPos.containing(pos);
+        return !level.getBlockState(bp).getCollisionShape(level, bp).isEmpty();
+    }
+
+    private static int clampIndex(int i, int length) {
+        return Math.max(0, Math.min(length - 1, i));
     }
 
     /** แสดงข้อความบน action bar (ใช้ packet ตรงๆ เพราะ displayClientMessage ถูกเอาออกใน 26.x) */
@@ -161,20 +284,5 @@ public final class SkillCaster {
         if (target instanceof ServerPlayer sp) {
             sp.connection.send(new ClientboundSetEntityMotionPacket(sp));
         }
-    }
-
-    private static ParticleOptions particle(SkillEffect effect) {
-        return switch (effect) {
-            case NONE -> ParticleTypes.CRIT;
-            case FIRE -> ParticleTypes.FLAME;
-            case SLOW -> ParticleTypes.SNOWFLAKE;
-            case POISON -> ParticleTypes.WITCH;
-            case WITHER -> ParticleTypes.SMOKE;
-            case KNOCKBACK -> ParticleTypes.CLOUD;
-        };
-    }
-
-    private static void burst(ServerLevel level, ParticleOptions particle, Vec3 pos, int count, double spread) {
-        level.sendParticles(particle, pos.x, pos.y, pos.z, count, spread, spread, spread, 0.02);
     }
 }
